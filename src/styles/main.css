@@ -17,15 +17,23 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
+/* Никакого pull-to-refresh и «резинки» на уровне документа. */
+html { overscroll-behavior: none; }
+
 body {
   background: var(--bg-deep);
   color: var(--text);
   font-family: var(--font);
+  /* Документ жёстко зафиксирован: свайпы по игре не должны прокручивать
+     страницу или сворачивать приложение. Списки в меню скроллятся сами
+     (.screen-scroll с overscroll-behavior: contain). */
+  position: fixed;
+  inset: 0;
   overflow: hidden;
+  overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
   -webkit-user-select: none;
   user-select: none;
-  overscroll-behavior: none;
   touch-action: manipulation;
 }
 
@@ -43,6 +51,9 @@ body {
   width: 100%;
   height: 100%;
   display: block;
+  /* Свайп по полю — жест игры: браузер не перехватывает его как навигацию
+     или обновление страницы, а pointer-события не обрываются pointercancel. */
+  touch-action: none;
 }
 
 /* ============ Overlays / screens ============ */

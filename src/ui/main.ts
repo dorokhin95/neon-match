@@ -89,6 +89,7 @@ class Game {
     setLang(this.save.settings.lang);
     this.initAudio();
     this.bindPointer();
+    this.lockGestures();
     window.addEventListener('resize', () => this.resize());
     document.addEventListener('visibilitychange', () => {
       this.running = !document.hidden;
@@ -185,6 +186,22 @@ class Game {
       this.board?.pointerMove(e.clientX, e.clientY);
     });
     window.addEventListener('pointerup', () => this.board?.pointerUp());
+    // Страховка для старых вебвью: жест по канвасу не должен превращаться
+    // в прокрутку или pull-to-refresh (основная защита — touch-action: none).
+    canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+  }
+
+  /** Свайпы не должны уводить из игры. Горизонтальный «назад» ловим буферной
+   *  записью истории: popstate тут же восстанавливает её, страница не выгружается. */
+  private lockGestures(): void {
+    try {
+      history.pushState({ neon: true }, '');
+      window.addEventListener('popstate', () => history.pushState({ neon: true }, ''));
+    } catch {
+      // sandboxed iframe и т.п. — жесты остаются на совести контейнера
+    }
+    // Запрет pinch-zoom на iOS (страховка к user-scalable=no).
+    document.addEventListener('gesturestart', (e) => e.preventDefault());
   }
 
   // ============ Screens ============
