@@ -2,7 +2,7 @@
 
 import { TOTAL_LEVELS } from '../core/levels';
 import type { LevelDef, WinStats } from '../core/types';
-import { drawGemBody, drawIceOverlay, drawPowerOverlay, drawLightningIcon, GEM_COLORS } from '../render/gem';
+import { drawGemBody, drawIceOverlay, drawPowerOverlay, drawLightningIcon } from '../render/gem';
 import { t } from './i18n';
 
 /** Версия игры — берётся из package.json на этапе сборки. */
@@ -397,11 +397,16 @@ export class UI {
     for (const g of level.n === 0 ? [] : level.goals) {
       const chip = el('div', 'goal-chip');
       if (g.kind === 'collect' && g.gem !== undefined) {
-        // Мини-версия формы гема: цвет + шейдонакальный блик, как на поле.
-        const dot = el('span', 'goal-gem');
-        const pal = GEM_COLORS[g.gem]!;
-        dot.style.cssText = `background:${pal.base};box-shadow:0 0 10px ${pal.glow}, inset 0 -2px 4px rgba(0,0,0,0.35), inset 0 2px 3px rgba(255,255,255,0.5);`;
-        chip.appendChild(dot);
+        // Иконка цели — ровно тот же гем, что и на поле: та же форма и цвет
+        // (рисуем движком поля, а не абстрактным ромбом).
+        const cv = document.createElement('canvas');
+        cv.width = 30;
+        cv.height = 30;
+        cv.className = 'goal-gem-icon';
+        const c2 = cv.getContext('2d')!;
+        c2.translate(15, 15);
+        drawGemBody(c2, g.gem, 11, 1);
+        chip.appendChild(cv);
         chip.title = t('game.hudCollect');
       } else if (g.kind === 'ice') {
         // Иконка льда ровно как на поле: гем под полупрозрачной ледяной коркой.

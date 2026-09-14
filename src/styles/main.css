@@ -340,13 +340,11 @@ body {
 .goal-chip .goal-count { color: var(--accent); font-size: 12px; }
 .goal-chip.goal-score .goal-count { color: var(--gold); }
 
-.goal-gem {
-  width: 18px;
-  height: 18px;
-  border-radius: 6px;
-  transform: rotate(45deg);
-  display: inline-block;
+.goal-gem-icon {
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
+  display: block;
 }
 
 .goal-ice, .goal-trophy { font-size: 16px; line-height: 1; }
