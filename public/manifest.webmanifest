@@ -1,0 +1,14 @@
+{
+  "name": "Neon Match",
+  "short_name": "NeonMatch",
+  "description": "Cosmic match-3 puzzle: 100 levels + endless mode",
+  "start_url": "./",
+  "scope": "./",
+  "display": "portrait",
+  "orientation": "portrait",
+  "background_color": "#070a18",
+  "theme_color": "#070a18",
+  "icons": [
+    { "src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
