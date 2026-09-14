@@ -390,7 +390,7 @@ export class UI {
     scoreChip.appendChild(scoreVal);
     row.appendChild(scoreChip);
 
-    // Цель — абсолютно по центру верхней строки (независимо от чипов слева).
+    // Цель — отдельной строкой под ходами/счётом (см. .hud-goal в CSS).
     const goalRow = el('div', 'hud-goal');
     const goals: HTMLElement[] = [];
     const goalTexts: string[] = [];
@@ -436,12 +436,11 @@ export class UI {
       goalRow.appendChild(chip);
       goals.push(chip);
     }
-    // Цель центрируется абсолютно внутри строки HUD, пауза — справа.
-    row.appendChild(goalRow);
-
     const pauseBtn = el('button', 'btn btn-ghost', '⏸');
     pauseBtn.id = 'btn-pause';
     row.appendChild(pauseBtn);
+    // Строка целей идёт после паузы: на своей линии (width: 100% в flex-wrap).
+    row.appendChild(goalRow);
     root.appendChild(row);
 
     return {

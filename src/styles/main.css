@@ -279,6 +279,7 @@ body {
 #hud .hud-row {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
 }
@@ -316,14 +317,15 @@ body {
   margin-left: auto;
 }
 
+/* Цели — отдельной строкой под ходами/счётом, с переносом при нехватке
+   места: абсолютное центрирование на узких экранах наезжало на чипы слева. */
 .hud-goal {
-  position: absolute;
-  left: 50%;
-  top: 0;
-  transform: translateX(-50%);
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
   align-items: center;
+  width: 100%;
   pointer-events: none;
 }
 
