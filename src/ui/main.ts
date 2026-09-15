@@ -624,12 +624,12 @@ class Game {
       if (this.save.powers.extraMoves <= 0) return this.offerSuperAd('extraMoves');
       this.save.powers.extraMoves--;
       this.persist();
-      const res = eng.useExtraMoves(2);
+      this.refreshPowers();
+      eng.useExtraMoves(2);
       this.updateMovesHud();
       this.ui.toast(t('super.usedMoves'));
       this.sfx?.chain();
       haptic(this.tg, this.save.settings.haptics, 'light');
-      void res;
       return;
     }
     if (this.save.powers[kind] <= 0) return this.offerSuperAd(kind);
