@@ -10,7 +10,7 @@ import {
   normalize,
   syncEnergy,
   type SaveData,
-} from '../src/platform/storage';
+} from '../src/platform/storage/save-schema';
 
 function saveWith(current: number, updatedAt: number): SaveData {
   const s = defaultSave();

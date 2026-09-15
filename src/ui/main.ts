@@ -12,20 +12,18 @@ import { Particles } from '../render/particles';
 import { getAudio, resumeAudio, suspendAudio } from '../audio/ctx';
 import { Sfx } from '../audio/sfx';
 import { Music } from '../audio/music';
-import { initTelegram, haptic, hapticNotify, isTelegram, type TelegramAPI } from '../platform/telegram';
-import { isAdsAvailable, showRewardedAd } from '../platform/ads';
+import type { PlatformAdapter, RewardedPlacement } from '../platform/platform';
+import { createPlatform } from '../platform/create-platform';
+import { RepoSaveRepository } from '../platform/storage/save-repository';
+import { mapLang, syncEnergy } from '../platform/storage/save-schema';
 import {
-  defaultSave,
-  detectLang,
-  loadSave,
-  saveSave,
-  syncEnergy,
+  ENERGY_MAX,
   gainEnergy,
   loseEnergy,
   msToNextEnergy,
-  ENERGY_MAX,
   type SaveData,
-} from '../platform/storage';
+} from '../platform/storage/save-schema';
+import type { SaveRepository } from '../platform/storage/save-repository';
 import { starsFor, starsForMoves } from '../core/scoring';
 import { UI, type EnergyOpts, type SuperKind } from './ui';
 import { setLang, t } from './i18n';
@@ -45,7 +43,8 @@ class Game {
   private particles = new Particles();
   private board: Board | null = null;
   private ui: UI;
-  private tg: TelegramAPI | null;
+  private platform: PlatformAdapter;
+  private repo: SaveRepository;
   private save: SaveData;
   private sfx: Sfx | null = null;
   private music: Music | null = null;
@@ -67,11 +66,15 @@ class Game {
   private energyClock = 0;
   private lastFrame = performance.now();
   private running = true;
-  private backBtnCb: (() => void) | null = null;
+  /** Источники остановки цикла: скрытая вкладка, платформенная пауза, реклама, pause menu. */
+  private documentHidden = false;
+  private platformPaused = false;
+  private adShowing = false;
+  private adModal: HTMLElement | null = null;
   /** Секунды бездействия игрока с момента последнего хода/касания. */
   private idleTime = 0;
 
-  constructor() {
+  private constructor(platform: PlatformAdapter, repo: SaveRepository, save: SaveData) {
     this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
     // Dev-доступ к состоянию партии из консоли/тестов.
     (this.canvas as unknown as Record<string, unknown>)['__game'] = this;
@@ -79,28 +82,37 @@ class Game {
     if (!ctx) throw new Error('no 2d context');
     this.ctx = ctx;
     this.ui = new UI(document.getElementById('overlays')!);
-    this.tg = initTelegram();
-    this.save = loadSave(this.tg);
+    this.platform = platform;
+    this.repo = repo;
+    this.save = save;
     syncEnergy(this.save); // офлайн-восстановление энергии по таймстампу
-    if (!localStorage.getItem('neon-match-initialized')) {
-      this.save.settings.lang = detectLang(this.tg?.initDataUnsafe?.user?.language_code);
-      localStorage.setItem('neon-match-initialized', '1');
-      this.persist();
-    }
-    setLang(this.save.settings.lang);
     this.initAudio();
     this.bindPointer();
     this.lockGestures();
     window.addEventListener('resize', () => this.resize());
     document.addEventListener('visibilitychange', () => {
-      this.running = !document.hidden;
+      this.documentHidden = document.hidden;
+      this.updateRunning();
       this.lastFrame = performance.now();
-      if (document.hidden) suspendAudio();
-      else resumeAudio();
+      if (document.hidden) {
+        suspendAudio();
+        void this.repo.flush(); // уход в background — сохранить облако немедленно
+      } else if (!this.platformPaused && !this.userPaused()) {
+        resumeAudio();
+      }
     });
-    if (isTelegram() && this.tg?.onEvent) {
-      this.tg.onEvent('backButtonClicked', () => this.backBtnCb?.());
-    }
+    // Платформенная пауза (Yandex game_api_pause/resume). Не дублирует
+    // visibilitychange: общий расчёт running в updateRunning().
+    this.platform.onPause?.(() => {
+      this.platformPaused = true;
+      this.updateRunning();
+      suspendAudio();
+    });
+    this.platform.onResume?.(() => {
+      this.platformPaused = false;
+      this.updateRunning();
+      if (!this.documentHidden && !this.userPaused()) resumeAudio();
+    });
     // Dev-хук: превращение гема в бонус из консоли/тестов.
     window.addEventListener('neon-set-power', ((e: Event) => {
       const { r, c, power } = (e as CustomEvent<{ r: number; c: number; power: number }>).detail;
@@ -114,6 +126,29 @@ class Game {
     this.resize();
     this.showMenu();
     requestAnimationFrame((ts) => this.frame(ts));
+  }
+
+  /** Асинхронный bootstrap: платформа уже инициализирована, сейв смержен. */
+  static async create(platform: PlatformAdapter, repo: SaveRepository): Promise<Game> {
+    const save = await repo.load();
+    // Язык: auto — с платформы на каждом запуске; manual — выбор игрока.
+    if (save.settings.langMode === 'manual') {
+      setLang(save.settings.lang);
+    } else {
+      save.settings.lang = mapLang(platform.getLanguage());
+      setLang(save.settings.lang);
+    }
+    return new Game(platform, repo, save);
+  }
+
+  /** Игра идёт, только когда ни один источник паузы не активен. */
+  private userPaused(): boolean {
+    return this.pauseModal !== null;
+  }
+
+  private updateRunning(): void {
+    this.running = !this.documentHidden && !this.platformPaused && !this.adShowing && !this.userPaused();
+    if (this.running) this.lastFrame = performance.now();
   }
 
   // ============ Audio ============
@@ -141,8 +176,9 @@ class Game {
     this.sfx?.setEnabled(this.save.settings.sfx > 0);
   }
 
-  private persist(): void {
-    saveSave(this.save, this.tg);
+  /** persist: local сразу, cloud с debounce; critical — победа/rewarded/reset. */
+  private persist(critical = false): void {
+    this.repo.save(this.save, critical);
   }
 
   // ============ Layout ============
@@ -259,6 +295,7 @@ class Game {
         if (s.haptics !== undefined) this.save.settings.haptics = s.haptics;
         if (s.lang !== undefined) {
           this.save.settings.lang = s.lang;
+          this.save.settings.langMode = 'manual'; // явный выбор игрока важнее авто-языка
           setLang(s.lang);
           this.refreshScreen();
         }
@@ -271,10 +308,13 @@ class Game {
       },
       onReset: () => {
         this.ui.confirm(t('settings.resetConfirm'), t('settings.yes'), t('settings.no'), () => {
-          this.save = defaultSave();
-          this.persist();
-          setLang(this.save.settings.lang);
-          this.showMenu();
+          // Полный сброс: local + cloud перезаписываются дефолтом.
+          void this.repo.reset().then((fresh) => {
+            this.save = fresh;
+            this.save.settings.lang = mapLang(this.platform.getLanguage());
+            setLang(this.save.settings.lang);
+            this.showMenu();
+          });
         });
       },
     });
@@ -294,38 +334,10 @@ class Game {
 
   // ============ Game flow ============
 
-  /**
-   * Показ rewarded-рекламы с наградой. В Telegram показывает ролик AdsGram
-   * (награда — только если досмотрено до конца); в обычном браузере SDK
-   * недоступен, поэтому остаётся прежняя модалка-заглушка.
-   */
-  private runAdFlow(
-    rewardName: string,
-    onGranted: () => void,
-    title?: string,
-    subtitle?: string,
-  ): void {
-    if (isTelegram() && isAdsAvailable()) {
-      void showRewardedAd().then((watched) => {
-        if (watched) onGranted();
-        else this.ui.toast(t('ad.skipped'));
-      });
-      return;
-    }
-    const backdrop = this.ui.adStubModal(
-      rewardName,
-      () => {
-        this.ui.closeModal(backdrop);
-        onGranted();
-      },
-      () => this.ui.closeModal(backdrop),
-      title,
-      subtitle,
-    );
-  }
-
-  /** Состояние энергии для виджетов; синхронизирует офлайн-восстановление. */
-  private energyView(): EnergyOpts {
+  /** Состояние энергии для виджетов; синхронизирует офлайн-восстановление.
+   *  На платформах без energyGate виджеты энергии не создаются. */
+  private energyView(): EnergyOpts | undefined {
+    if (!this.platform.features.energyGate) return undefined;
     return {
       get: () => {
         syncEnergy(this.save);
@@ -335,34 +347,84 @@ class Game {
     };
   }
 
-  /** Проверка энергии перед запуском уровня. false — показана модалка
-   *  «энергия кончилась» с предложением рекламы; после просмотра
-   *  действие повторяется автоматически. */
+  /**
+   * Унифицированный rewarded flow. Награда — только при результате 'rewarded'
+   * (досмотрено до конца). На платформах без рекламного SDK (browser/dev)
+   * показывает подтверждение «смотреть рекламу» и выдаёт награду как тестовый
+   * сценарий; в Yandex- и Telegram-production этой заглушки нет.
+   */
+  private async runRewarded(placement: RewardedPlacement, onReward: () => void): Promise<void> {
+    if (!this.platform.features.rewardedAds) {
+      this.showAdStub(() => onReward());
+      return;
+    }
+    this.platform.gameplayStop();
+    this.adShowing = true;
+    this.updateRunning();
+    suspendAudio();
+    try {
+      const result = await this.platform.showRewardedAd(placement);
+      if (result === 'rewarded') {
+        onReward();
+        this.persist(true); // критическое событие — облако сразу
+      } else if (result === 'error' || result === 'unavailable') {
+        this.ui.toast(t('ad.unavailable'));
+      } else {
+        this.ui.toast(t('ad.skipped'));
+      }
+    } finally {
+      this.adShowing = false;
+      this.updateRunning();
+      if (!this.documentHidden && !this.platformPaused && !this.userPaused()) {
+        resumeAudio();
+        // Уровень всё ещё активен — геймплей продолжается.
+        if (this.mode && !this.pauseModal) this.platform.gameplayStart();
+      }
+    }
+  }
+
+  /** Dev/browser fallback: подтверждение перед «просмотром». */
+  private showAdStub(onGranted: () => void): void {
+    if (this.adModal) return;
+    this.adModal = this.ui.adStubModal(
+      '',
+      () => {
+        this.closeAdStub();
+        onGranted();
+      },
+      () => this.closeAdStub(),
+    );
+  }
+
+  private closeAdStub(): void {
+    if (this.adModal) {
+      this.ui.closeModal(this.adModal);
+      this.adModal = null;
+    }
+  }
+
+  /** Проверка энергии перед запуском уровня. false — показан рекламный flow;
+   *  после просмотра действие повторяется автоматически. На платформах без
+   *  energyGate проверка всегда проходит (требование Яндекс Игр). */
   private gateEnergy(retry: () => void): boolean {
+    if (!this.platform.features.energyGate) return true;
     syncEnergy(this.save);
     if (this.save.energy.current > 0) return true;
-    this.runAdFlow(
-      t('energy.adName'),
-      () => {
-        gainEnergy(this.save, 1);
-        this.persist();
-        this.ui.tickEnergy();
-        this.ui.toast(t('energy.got'));
-        this.sfx?.chain();
-        retry();
-      },
-      t('energy.empty.title'),
-      t('energy.hint'),
-    );
+    void this.runRewarded('energy_refill', () => {
+      gainEnergy(this.save, 1);
+      this.ui.tickEnergy();
+      this.ui.toast(t('energy.got'));
+      this.sfx?.chain();
+      retry();
+    });
     return false;
   }
 
   /** Реклама прямо из чипа энергии: +1 ⚡. */
   private offerEnergyAd(): void {
     this.playUi();
-    this.runAdFlow(t('energy.adName'), () => {
+    void this.runRewarded('energy_refill', () => {
       gainEnergy(this.save, 1);
-      this.persist();
       this.ui.tickEnergy();
       this.ui.toast(t('energy.got'));
       this.sfx?.chain();
@@ -372,18 +434,19 @@ class Game {
   /** Спасение на экране проигрыша: +5 ходов за рекламу, партия продолжается. */
   private offerRescue(n: number): void {
     this.playUi();
-    this.runAdFlow(t('rescue.adName'), () => {
+    void this.runRewarded('rescue_5_moves', () => {
       this.ui.clearModals(); // убрать экран проигрыша
       this.rescueUsed = true;
-      gainEnergy(this.save, 1); // спасение возвращает только что списанную энергию
+      // На платформах с energyGate спасение возвращает списанную энергию.
+      if (this.platform.features.energyGate) gainEnergy(this.save, 1);
       const fails = this.save.levelFails[n];
       if (fails !== undefined && fails > 0) this.save.levelFails[n] = fails - 1;
       this.engine?.useExtraMoves(5);
       this.updateMovesHud();
-      this.persist();
       this.ui.tickEnergy();
       this.ui.toast(t('rescue.got'));
       this.sfx?.chain();
+      this.platform.gameplayStart();
     });
   }
 
@@ -447,7 +510,9 @@ class Game {
     });
     document.getElementById('overlays')!.appendChild(this.powerBar.root);
     this.updateMovesHud();
-    if (isTelegram()) this.setBack(() => this.quitToMenu());
+    // Активный геймплей начался (Yandex GameplayAPI) + кнопка «Назад» (Telegram).
+    this.platform.gameplayStart();
+    if (this.platform.setBackButton) this.platform.setBackButton(() => this.quitToMenu());
     // Первая подсказка про бонус: один раз, при первом появлении бонуса на поле.
     if (!this.save.powerTipShown && this.engine.grid.flat().some((g) => g && g.power !== P.None)) {
       this.save.powerTipShown = true;
@@ -489,7 +554,7 @@ class Game {
     const result = eng.tryMove(a, b);
     if (!result.valid) {
       this.sfx?.invalid();
-      haptic(this.tg, this.save.settings.haptics, 'light');
+      this.doHaptic('light');
       void board.playSteps(result.steps);
       return;
     }
@@ -509,7 +574,7 @@ class Game {
     // Audio/haptics driven by what happened
     if (result.maxCascade >= 2) {
       this.sfx?.combo(result.maxCascade);
-      haptic(this.tg, this.save.settings.haptics, 'medium');
+      this.doHaptic('medium');
       const key = `game.combo${Math.min(5, result.maxCascade - 1)}`;
       this.ui.comboBanner(t(key));
     }
@@ -539,12 +604,17 @@ class Game {
           this.endlessRecordShown = true;
           this.ui.toast(t('endless.newRecord'));
         }
+        // Новый endless-рекорд — отправить в таблицу лидеров (если доступна).
+        if (this.platform.features.leaderboard && this.platform.setLeaderboardScore) {
+          this.platform.setLeaderboardScore('endless_best', this.save.endlessBest).catch(() => undefined);
+        }
       }
       if (newCombo) this.save.endlessBestCombo = this.endlessCombo;
-      if (newBest || newCombo) this.persist();
+      if (newBest || newCombo) this.persist(newBest);
       if (eng.movesLeft <= 0) {
         this.sfx?.lose();
-        hapticNotify(this.tg, this.save.settings.haptics, 'error');
+        this.doHapticNotify('error');
+        this.platform.gameplayStop(); // партия завершена
         this.ui.lose(eng.obj.score, {
           onRetry: () => {
             this.ui.clearModals();
@@ -566,16 +636,20 @@ class Game {
     }
     if (eng.movesLeft <= 0) {
       this.sfx?.lose();
-      hapticNotify(this.tg, this.save.settings.haptics, 'error');
+      this.doHapticNotify('error');
+      this.platform.gameplayStop(); // партия завершена (спасение может продолжить)
       const n = (this.mode as { kind: 'levels'; n: number }).n;
-      // Неудача тратит энергию и ломает серию; спасение может всё вернуть.
-      loseEnergy(this.save, 1);
+      // Неудача тратит энергию (только там, где energyGate) и ломает серию;
+      // спасение может всё вернуть.
+      if (this.platform.features.energyGate) loseEnergy(this.save, 1);
       this.save.levelFails[n] = (this.save.levelFails[n] ?? 0) + 1;
       this.save.streak = 0;
       this.persist();
       this.ui.tickEnergy();
       this.ui.lose(eng.obj.score, {
-        energy: t('lose.energy', { n: this.save.energy.current, max: ENERGY_MAX }),
+        energy: this.platform.features.energyGate
+          ? t('lose.energy', { n: this.save.energy.current, max: ENERGY_MAX })
+          : undefined,
         onRescue: this.rescueUsed ? undefined : () => this.offerRescue(n),
         onRetry: () => {
           this.ui.clearModals();
@@ -629,7 +703,7 @@ class Game {
       this.updateMovesHud();
       this.ui.toast(t('super.usedMoves'));
       this.sfx?.chain();
-      haptic(this.tg, this.save.settings.haptics, 'light');
+      this.doHaptic('light');
       return;
     }
     if (this.save.powers[kind] <= 0) return this.offerSuperAd(kind);
@@ -648,14 +722,10 @@ class Game {
 
   private offerSuperAd(kind: SuperKind): void {
     this.playUi();
-    const names: Record<SuperKind, string> = {
-      bomb: t('super.bomb'),
-      lightning: t('super.lightning'),
-      extraMoves: t('super.extraMoves'),
-    };
-    this.runAdFlow(names[kind], () => {
+    const placement: RewardedPlacement =
+      kind === 'bomb' ? 'super_bomb' : kind === 'lightning' ? 'super_lightning' : 'super_extra_moves';
+    void this.runRewarded(placement, () => {
       this.save.powers[kind]++;
-      this.persist();
       this.refreshPowers();
       this.ui.toast(t('super.got', { name: kind === 'bomb' ? '💥' : kind === 'lightning' ? '⚡' : '+2' }));
       this.sfx?.chain();
@@ -680,7 +750,7 @@ class Game {
     this.resetIdle();
     const result = kind === 'bomb' ? eng.useSuperBomb(pos) : eng.useSuperLightning(pos);
     this.sfx?.blast();
-    haptic(this.tg, this.save.settings.haptics, 'medium');
+    this.doHaptic('medium');
     void this.runRound(result);
   }
 
@@ -710,7 +780,7 @@ class Game {
     // Победа с первой попытки (без провалов и спасений): +1 ⚡ и серия.
     const fails = this.save.levelFails[mode.n] ?? 0;
     if (fails === 0 && !this.rescueUsed) {
-      gainEnergy(this.save, 1);
+      if (this.platform.features.energyGate) gainEnergy(this.save, 1);
       this.save.streak++;
       if (this.save.streak % STREAK_REWARD_EVERY === 0) {
         const kind: SuperKind = this.save.streak % 2 === 0 ? 'lightning' : 'bomb';
@@ -720,9 +790,10 @@ class Game {
       this.ui.toast(t('win.perfect'));
     }
     delete this.save.levelFails[mode.n]; // попытки сбрасываются победой
-    this.persist();
+    this.persist(true); // победа/открытие уровня — критическое сохранение
+    this.platform.gameplayStop(); // уровень завершён
     this.sfx?.win();
-    hapticNotify(this.tg, this.save.settings.haptics, 'success');
+    this.doHapticNotify('success');
     const hasNext = mode.n < TOTAL_LEVELS;
     this.ui.win({
       score: eng.obj.score,
@@ -753,6 +824,8 @@ class Game {
   private pause(): void {
     if (this.pauseModal) return;
     this.playUi();
+    this.platform.gameplayStop(); // пауза пользователем — геймплей остановлен
+    this.updateRunning();
     this.pauseModal = this.ui.pause({
       onResume: () => this.resume(),
       onRestart: () => {
@@ -778,29 +851,32 @@ class Game {
       this.ui.closeModal(this.pauseModal);
       this.pauseModal = null;
     }
+    this.updateRunning();
     // Snap any mid-flight animation to its final position so nothing drifts.
     this.board?.resnap();
+    // Возврат в активную партию.
+    if (this.mode) this.platform.gameplayStart();
   }
 
   private quitToMenu(): void {
-    this.setBack(null);
+    this.platform.gameplayStop();
+    this.platform.setBackButton?.(null);
     this.showMenu();
-  }
-
-  private setBack(cb: (() => void) | null): void {
-    this.backBtnCb = cb;
-    const bb = this.tg?.BackButton;
-    if (!bb) return;
-    try {
-      if (cb) bb.show();
-      else bb.hide();
-    } catch {
-      // ignore
-    }
   }
 
   private playUi(): void {
     this.sfx?.ui();
+  }
+
+  /** Вибрация по настройке игрока; на платформе без поддержки — no-op. */
+  private doHaptic(type: 'light' | 'medium' | 'heavy'): void {
+    if (!this.save.settings.haptics) return;
+    this.platform.haptic?.(type);
+  }
+
+  private doHapticNotify(type: 'error' | 'success' | 'warning'): void {
+    if (!this.save.settings.haptics) return;
+    this.platform.hapticNotify?.(type);
   }
 
   // ============ Frame loop ============
@@ -831,13 +907,57 @@ class Game {
     this.energyClock += dt;
     if (this.energyClock >= 1) {
       this.energyClock = 0;
-      if (syncEnergy(this.save) > 0) this.persist();
+      if (this.platform.features.energyGate && syncEnergy(this.save) > 0) this.persist();
       this.ui.tickEnergy();
     }
   }
 }
 
-new Game();
+// ============ Bootstrap ============
+// Порядок: платформа → сейв (local+cloud merge) → Game → меню → Game Ready.
+// Loading overlay скрывается только когда UI готов к взаимодействию
+// (обязательное требование модерации Яндекс Игр).
+
+const LOADING_HTML = `
+  <div id="loading-screen" style="position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:14px;background:#070a18;color:#8ea2ff;
+    font:600 22px/1.4 system-ui,sans-serif;letter-spacing:2px;">
+    <div>NEON MATCH</div>
+    <div id="loading-text" style="font-size:14px;font-weight:400;opacity:.7;letter-spacing:0"></div>
+  </div>`;
+
+function removeLoadingScreen(): void {
+  document.getElementById('loading-screen')?.remove();
+}
+
+async function bootstrap(): Promise<void> {
+  document.body.insertAdjacentHTML('beforeend', LOADING_HTML);
+  const loadingText = document.getElementById('loading-text');
+  if (loadingText) loadingText.textContent = t('common.loading');
+
+  const platform = createPlatform(); // своя платформа; остальные вытряхнуты tree-shaking'ом
+  await platform.init(); // ошибки внутри адаптера не бросаются
+
+  const repo = new RepoSaveRepository(platform);
+  const game = await Game.create(platform, repo);
+
+  // LoadingAPI.ready() — только когда интерфейс построен и ввод доступен.
+  platform.loadingReady();
+  removeLoadingScreen();
+  // Полноэкранный режим на мобильных (Yandex): после первого действия игрока.
+  if (platform.features.interstitialAds && platform.requestFullscreen) {
+    const goFullscreen = (): void => {
+      platform.requestFullscreen?.();
+      window.removeEventListener('pointerdown', goFullscreen);
+    };
+    window.addEventListener('pointerdown', goFullscreen, { once: true });
+  }
+  // Dev-доступ к платформе из консоли.
+  (window as unknown as Record<string, unknown>)['__platform'] = platform;
+  void game;
+}
+
+void bootstrap();
 
 // Dev-хук для отладки: превратить произвольный гем в бонус (только в dev-сборке).
 if (import.meta.env.DEV) {

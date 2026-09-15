@@ -15,7 +15,10 @@
     "skipLibCheck": true,
     "useDefineForClassFields": true,
     "noEmit": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "paths": {
+      "#platform": ["./src/platform/telegram/impl.ts"]
+    }
   },
   "include": ["src", "tests"]
 }

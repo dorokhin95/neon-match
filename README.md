@@ -21,25 +21,57 @@
 - Фон: у каждого уровня свой оттенок космоса (плавно перетекает между уровнями),
   в бесконечном режиме — медленно плывущий
 
-## Запуск
+## Запуск и сборка
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
-```
 
-## Сборка и тесты
+npm run dev              # локальная разработка (browser-платформа)
+npm run dev:telegram     # локальная разработка (telegram-платформа)
+npm run dev:yandex       # локальная разработка (yandex-платформа)
 
-```bash
-npm run build    # typecheck + production build в dist/
-npm test         # модульные тесты движка (vitest)
+npm test                 # модульные тесты (vitest)
 npm run typecheck
+
+npm run build:telegram   # production-сборка → dist-telegram/
+npm run build:yandex     # production-сборка → dist-yandex/
+npm run pack:yandex      # dist-yandex → neon-match-yandex.zip (для Консоли Яндекса)
+npm run check:builds     # проверка: в каждой сборке только своя платформа
 ```
 
-## Публикация на GitHub Pages
+Один исходный код — две независимые сборки:
+
+| | Telegram build | Yandex build |
+|---|---|---|
+| Папка | `dist-telegram/` | `dist-yandex/` |
+| Реклама | AdsGram (rewarded) | Yandex Ads (`showRewardedVideo`) |
+| Сохранения | Telegram CloudStorage + localStorage | Yandex Player (`getData/setData`) + localStorage |
+| Лидерборды | — | `endless_best` |
+| Энергия | активна (hard gate) | отключена (требование модерации) |
+
+Платформа выбирается **на этапе сборки** (`vite --mode …`, alias `#platform`),
+поэтому в Yandex-бандл не попадает AdsGram, а в Telegram-бандл — Yandex SDK.
+
+## Публикация на Яндекс Играх
+
+1. `npm run build:yandex && npm run pack:yandex` → `neon-match-yandex.zip`
+   (index.html в корне архива, латиница без пробелов, лимит 100 МБ).
+2. Загрузите ZIP в [Консоль разработчика Яндекс Игр](https://games.yandex.ru/console/).
+3. Создайте лидерборд с техническим именем `endless_best` (Игра → Лидерборды).
+4. Проверьте в черновике через Debug Panel: SDK init, Game Ready, i18n,
+   пауза при потере фокуса, rewarded, облачные сохранения.
+
+Сборка соответствует требованиям модерации: SDK подключается (`/sdk.js`),
+`LoadingAPI.ready()` вызывается после готовности UI, язык берётся из
+`environment.i18n.lang`, звук и геймплей ставятся на паузу во время рекламы
+и при `game_api_pause`, rewarded — добровольный бонус (энергия отключена,
+рядом со спасением всегда есть обычный «Повторить»).
+
+## Публикация на GitHub Pages (Telegram Mini App)
 
 1. **Settings → Pages → Source: GitHub Actions**
-2. Запушьте ветку `main` — workflow `.github/workflows/deploy.yml` соберёт и выложит игру автоматически.
+2. Запушьте ветку `main` — workflow соберёт `build:telegram`, прогонит тесты,
+   проверит сборку и выложит игру автоматически.
 3. Игра будет доступна по адресу `https://<username>.github.io/<repo>/`
 
 `vite.config.ts` использует `base: './'`, поэтому сборка работает из любой папки.
@@ -53,8 +85,8 @@ npm run typecheck
 
 Интеграция уже включена: `ready()/expand()`, цвет шапки, отключение вертикальных
 свайпов, кнопка «Назад», вибрация через `Haptics`, прогресс синхронизируется
-через `CloudStorage` (в браузере — localStorage). В обычном браузере всё
-работает без Telegram.
+через `CloudStorage` (в браузере — localStorage). Rewarded-реклама — AdsGram
+(blockId в `src/platform/telegram/adsgram.ts`).
 
 ## Структура
 
@@ -65,11 +97,25 @@ src/core/                движок: поле, матчи, бонусы, 100 �
 src/render/              canvas-графика: фон, гемы, частицы, анимации
 src/audio/               WebAudio: синтезированные SFX и эмбиент-музыка
 src/ui/                  экраны: меню, уровни, настройки, пауза, HUD, i18n RU/EN
-src/platform/            Telegram WebApp API + сохранение прогресса
-tests/                   модульные тесты движка
+src/platform/
+  platform.ts            контракт PlatformAdapter (+PlatformFeatures)
+  create-platform.ts     фабрика (alias '#platform' → impl выбранной платформы)
+  browser/               браузерная платформа (GitHub Pages / dev)
+  telegram/              Telegram WebApp + AdsGram + CloudStorage
+  yandex/                Yandex Games SDK: реклама, Player, лидерборды, пауза
+  storage/               save-schema (envelope v2), localStorage, SaveRepository
+scripts/                 pack:yandex (ZIP), check:builds (проверка сборок)
+tests/                   модульные тесты движка и платформенного слоя
 ```
+
+Сохранения: `SaveData` в envelope `{schemaVersion, updatedAt, revision, data}`;
+local — сразу, cloud — с debounce 1.5 c (критические события — сразу);
+merge при старте по `updatedAt` с защитой «пустой сейв не затирает прогресс».
+Добавление новой платформы (VK Play, CrazyGames…) = ещё один
+`PlatformAdapter`, без изменения игрового кода.
 
 ## Технологии
 
-Vite + TypeScript (strict), ноль рантайм-зависимостей. Графика — Canvas 2D,
-звук — WebAudio (синтез). Тесты — Vitest.
+Vite + TypeScript (strict), ноль рантайм-зависимостей (типы `@types/ysdk` —
+только для разработки). Графика — Canvas 2D, звук — WebAudio (синтез).
+Тесты — Vitest.

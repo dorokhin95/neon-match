@@ -1,5 +1,8 @@
 node_modules/
 dist/
+dist-telegram/
+dist-yandex/
+neon-match-yandex.zip
 *.local
 .DS_Store
 vite.log

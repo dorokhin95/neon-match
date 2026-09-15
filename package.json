@@ -5,13 +5,20 @@
   "type": "module",
   "description": "Neon Match — cosmic match-3 web game (GitHub Pages + Telegram Mini App)",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "vite --mode browser",
+    "dev:telegram": "vite --mode telegram",
+    "dev:yandex": "vite --mode yandex",
+    "build": "npm run build:telegram",
+    "build:telegram": "tsc --noEmit && vite build --mode telegram",
+    "build:yandex": "tsc --noEmit && vite build --mode yandex",
     "preview": "vite preview",
+    "pack:yandex": "node scripts/pack-yandex.mjs",
+    "check:builds": "node scripts/check-builds.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/ysdk": "^1.2.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
     "vitest": "^2.1.4"
