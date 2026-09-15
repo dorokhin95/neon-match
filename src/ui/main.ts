@@ -13,6 +13,7 @@ import { getAudio, resumeAudio, suspendAudio } from '../audio/ctx';
 import { Sfx } from '../audio/sfx';
 import { Music } from '../audio/music';
 import { initTelegram, haptic, hapticNotify, isTelegram, type TelegramAPI } from '../platform/telegram';
+import { isAdsAvailable, showRewardedAd } from '../platform/ads';
 import {
   defaultSave,
   detectLang,
@@ -293,6 +294,36 @@ class Game {
 
   // ============ Game flow ============
 
+  /**
+   * Показ rewarded-рекламы с наградой. В Telegram показывает ролик AdsGram
+   * (награда — только если досмотрено до конца); в обычном браузере SDK
+   * недоступен, поэтому остаётся прежняя модалка-заглушка.
+   */
+  private runAdFlow(
+    rewardName: string,
+    onGranted: () => void,
+    title?: string,
+    subtitle?: string,
+  ): void {
+    if (isTelegram() && isAdsAvailable()) {
+      void showRewardedAd().then((watched) => {
+        if (watched) onGranted();
+        else this.ui.toast(t('ad.skipped'));
+      });
+      return;
+    }
+    const backdrop = this.ui.adStubModal(
+      rewardName,
+      () => {
+        this.ui.closeModal(backdrop);
+        onGranted();
+      },
+      () => this.ui.closeModal(backdrop),
+      title,
+      subtitle,
+    );
+  }
+
   /** Состояние энергии для виджетов; синхронизирует офлайн-восстановление. */
   private energyView(): EnergyOpts {
     return {
@@ -310,10 +341,9 @@ class Game {
   private gateEnergy(retry: () => void): boolean {
     syncEnergy(this.save);
     if (this.save.energy.current > 0) return true;
-    const backdrop = this.ui.adStubModal(
+    this.runAdFlow(
       t('energy.adName'),
       () => {
-        this.ui.closeModal(backdrop);
         gainEnergy(this.save, 1);
         this.persist();
         this.ui.tickEnergy();
@@ -321,51 +351,40 @@ class Game {
         this.sfx?.chain();
         retry();
       },
-      () => this.ui.closeModal(backdrop),
       t('energy.empty.title'),
       t('energy.hint'),
     );
     return false;
   }
 
-  /** Реклама (заглушка) прямо из чипа энергии: +1 ⚡. */
+  /** Реклама прямо из чипа энергии: +1 ⚡. */
   private offerEnergyAd(): void {
     this.playUi();
-    const backdrop = this.ui.adStubModal(
-      t('energy.adName'),
-      () => {
-        this.ui.closeModal(backdrop);
-        gainEnergy(this.save, 1);
-        this.persist();
-        this.ui.tickEnergy();
-        this.ui.toast(t('energy.got'));
-        this.sfx?.chain();
-      },
-      () => this.ui.closeModal(backdrop),
-    );
+    this.runAdFlow(t('energy.adName'), () => {
+      gainEnergy(this.save, 1);
+      this.persist();
+      this.ui.tickEnergy();
+      this.ui.toast(t('energy.got'));
+      this.sfx?.chain();
+    });
   }
 
   /** Спасение на экране проигрыша: +5 ходов за рекламу, партия продолжается. */
   private offerRescue(n: number): void {
     this.playUi();
-    const backdrop = this.ui.adStubModal(
-      t('rescue.adName'),
-      () => {
-        this.ui.closeModal(backdrop);
-        this.ui.clearModals(); // убрать экран проигрыша
-        this.rescueUsed = true;
-        gainEnergy(this.save, 1); // спасение возвращает только что списанную энергию
-        const fails = this.save.levelFails[n];
-        if (fails !== undefined && fails > 0) this.save.levelFails[n] = fails - 1;
-        this.engine?.useExtraMoves(5);
-        this.updateMovesHud();
-        this.persist();
-        this.ui.tickEnergy();
-        this.ui.toast(t('rescue.got'));
-        this.sfx?.chain();
-      },
-      () => this.ui.closeModal(backdrop), // отмена — остаёмся на экране проигрыша
-    );
+    this.runAdFlow(t('rescue.adName'), () => {
+      this.ui.clearModals(); // убрать экран проигрыша
+      this.rescueUsed = true;
+      gainEnergy(this.save, 1); // спасение возвращает только что списанную энергию
+      const fails = this.save.levelFails[n];
+      if (fails !== undefined && fails > 0) this.save.levelFails[n] = fails - 1;
+      this.engine?.useExtraMoves(5);
+      this.updateMovesHud();
+      this.persist();
+      this.ui.tickEnergy();
+      this.ui.toast(t('rescue.got'));
+      this.sfx?.chain();
+    });
   }
 
   private startLevel(n: number): void {
@@ -589,7 +608,7 @@ class Game {
     return 0;
   }
 
-  // ============ Суперспособности (за рекламу — заглушка) ============
+  // ============ Суперспособности (заряды за рекламу) ============
 
   private refreshPowers(): void {
     this.powerBar?.refresh(this.save.powers);
@@ -634,14 +653,13 @@ class Game {
       lightning: t('super.lightning'),
       extraMoves: t('super.extraMoves'),
     };
-    const backdrop = this.ui.adStubModal(names[kind], () => {
-      this.ui.closeModal(backdrop);
+    this.runAdFlow(names[kind], () => {
       this.save.powers[kind]++;
       this.persist();
       this.refreshPowers();
       this.ui.toast(t('super.got', { name: kind === 'bomb' ? '💥' : kind === 'lightning' ? '⚡' : '+2' }));
       this.sfx?.chain();
-    }, () => this.ui.closeModal(backdrop));
+    });
   }
 
   /** Применение суперспособности к выбранной клетке (вызывается доской). */
