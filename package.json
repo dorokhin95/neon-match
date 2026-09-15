@@ -8,7 +8,7 @@
     "dev": "vite --mode browser",
     "dev:telegram": "vite --mode telegram",
     "dev:yandex": "vite --mode yandex",
-    "build": "npm run build:telegram",
+    "build": "npm run build:telegram && node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.cpSync('dist-telegram','dist',{recursive:true})\"",
     "build:telegram": "tsc --noEmit && vite build --mode telegram",
     "build:yandex": "tsc --noEmit && vite build --mode yandex",
     "preview": "vite preview",
