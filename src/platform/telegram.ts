@@ -9,6 +9,9 @@ export interface TgUser {
 export interface TelegramAPI {
   ready(): void;
   expand(): void;
+  /** Платформа клиента ('ios', 'android', 'web', …); 'unknown' вне Mini App. */
+  platform?: string;
+  version?: string;
   setHeaderColor?(color: string): void;
   setBackgroundColor?(color: string): void;
   enableClosingConfirmation?(): void;
@@ -43,7 +46,11 @@ declare global {
 
 export function getTelegram(): TelegramAPI | null {
   const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : undefined;
-  return tg ?? null;
+  if (!tg) return null;
+  // telegram-web-app.js создаёт window.Telegram.WebApp даже при открытии
+  // страницы как обычного сайта — это не Mini App.
+  if (!tg.platform || tg.platform === 'unknown') return null;
+  return tg;
 }
 
 export function isTelegram(): boolean {
