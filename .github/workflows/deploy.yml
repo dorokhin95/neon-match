@@ -25,10 +25,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm run build
+      - run: npm run build:telegram
+      - run: npm run build:yandex
+      # Автопроверка: в каждой сборке только своя платформа
+      # (AdsGram не попадает в Yandex-бандл и наоборот).
+      - run: npm run check:builds
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: dist-telegram
 
   deploy:
     needs: build
