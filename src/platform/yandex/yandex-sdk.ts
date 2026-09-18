@@ -12,9 +12,11 @@ function injectScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${src}"]`);
     if (existing) {
-      existing.addEventListener('load', () => resolve());
-      existing.addEventListener('error', () => reject(new Error(`failed to load ${src}`)));
+      // Статический тег (без async) к моменту выполнения модульного скрипта уже
+      // отработал — его load/error уже произошёл и не повторится, поэтому новые
+      // слушатели никогда бы не сработали. Результат уже известен — проверяем сразу.
       if ((window as unknown as { YaGames?: unknown }).YaGames) resolve();
+      else reject(new Error(`already failed to load ${src}`));
       return;
     }
     const s = document.createElement('script');
