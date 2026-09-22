@@ -32,6 +32,7 @@ export class YandexPlatform implements PlatformAdapter {
   private sdk: SDK | null = null;
   private player: Player | null = null;
   private adInProgress = false;
+  private interstitialInProgress = false;
   private pauseCb: (() => void) | null = null;
   private resumeCb: (() => void) | null = null;
 
@@ -108,6 +109,41 @@ export class YandexPlatform implements PlatformAdapter {
       return 'error';
     } finally {
       this.adInProgress = false;
+    }
+  }
+
+  /** Межстраничная реклама между уровнями. Никогда не бросает — если ролика
+   *  нет (оффлайн/нет оффера) или SDK недоступен, промис просто разрешается
+   *  сразу и игра продолжается без рекламы. */
+  async showInterstitialAd(): Promise<void> {
+    if (!this.sdk || this.interstitialInProgress) return;
+    this.interstitialInProgress = true;
+    try {
+      await new Promise<void>((resolve) => {
+        let finished = false;
+        const finish = (): void => {
+          if (finished) return;
+          finished = true;
+          resolve();
+        };
+        try {
+          this.sdk!.adv.showFullscreenAdv({
+            callbacks: {
+              onClose: () => finish(),
+              onError: (error) => {
+                platformWarn('Ads', 'showFullscreenAdv error', error);
+                finish();
+              },
+              onOffline: () => finish(), // нет сети — площадка не покажет ролик
+            },
+          });
+        } catch (error) {
+          platformWarn('Ads', 'showFullscreenAdv threw', error);
+          finish();
+        }
+      });
+    } finally {
+      this.interstitialInProgress = false;
     }
   }
 

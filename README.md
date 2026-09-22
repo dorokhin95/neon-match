@@ -44,7 +44,7 @@ npm run check:builds     # проверка: в каждой сборке тол
 | | Telegram build | Yandex build |
 |---|---|---|
 | Папка | `dist-telegram/` | `dist-yandex/` |
-| Реклама | AdsGram (rewarded) | Yandex Ads (`showRewardedVideo`) |
+| Реклама | AdsGram (rewarded) | Yandex Ads: rewarded (`showRewardedVideo`) + interstitial каждые 3–5 уровней (`showFullscreenAdv`) |
 | Сохранения | Telegram CloudStorage + localStorage | Yandex Player (`getData/setData`) + localStorage |
 | Лидерборды | — | `endlessBest` |
 | Энергия | активна (hard gate) | отключена (требование модерации) |

@@ -39,6 +39,18 @@ const STREAK_REWARD_EVERY = 3;
 /** Техническое имя лидерборда в Консоли Яндекс Игр (маска [a-zA-Z0-9], без подчёркиваний). */
 const LEADERBOARD_ENDLESS_BEST = 'endlessBest';
 
+/** Межстраничная реклама между уровнями: не чаще, чем через это число пройденных
+ *  уровней. Точное число каждый раз выбирается случайно в этом диапазоне (§4.4:
+ *  показ только в логических паузах, не после каждого уровня подряд). */
+const INTERSTITIAL_MIN_LEVELS = 3;
+const INTERSTITIAL_MAX_LEVELS = 5;
+
+/** Случайное целое число пройденных уровней до следующей межстраничной рекламы. */
+function randomInterstitialGap(): number {
+  const span = INTERSTITIAL_MAX_LEVELS - INTERSTITIAL_MIN_LEVELS + 1;
+  return INTERSTITIAL_MIN_LEVELS + Math.floor(Math.random() * span);
+}
+
 class Game {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -63,6 +75,8 @@ class Game {
   private endlessRecordShown = false;
   /** Было ли в этой партии спасение за рекламу (лишает бонуса «с первой попытки»). */
   private rescueUsed = false;
+  /** Сколько ещё уровней нужно пройти до следующей межстраничной рекламы. */
+  private levelsUntilAd = randomInterstitialGap();
   /** Показана ли подсказка «мало ходов» в этой партии. */
   private nudgeShown = false;
   /** Аккумулятор секундного тика таймера энергии. */
@@ -448,6 +462,37 @@ class Game {
         if (wantGameplay) this.startGameplay();
       }
     }
+  }
+
+  /**
+   * Межстраничная реклама между уровнями (§4.4/§4.7): показывается только в
+   * логической паузе — когда игрок уже покидает экран победы (next/retry/
+   * menu), а не сразу после набора очков, и только если `show` — раз в 3–5
+   * пройденных уровней (см. levelsUntilAd в onWin). Звук и геймплей на это
+   * время останавливаются; после закрытия (или если ролика нет) выполняется
+   * `after`. На платформах без interstitialAds/`showInterstitialAd` реклама
+   * не запрашивается вовсе — сразу вызывается `after`.
+   */
+  private runInterstitial(after: () => void, show: boolean): void {
+    if (!show || !this.platform.features.interstitialAds || !this.platform.showInterstitialAd) {
+      after();
+      return;
+    }
+    this.stopGameplay();
+    this.adShowing = true;
+    this.updateRunning();
+    suspendAudio();
+    void this.platform
+      .showInterstitialAd()
+      .catch((error) => console.error('[Ads] showInterstitialAd failed', error))
+      .finally(() => {
+        this.adShowing = false;
+        this.updateRunning();
+        if (!this.externallyPaused() && !this.userPaused()) resumeAudio();
+        // Геймплей (если он вообще нужен дальше) запустит сам `after`
+        // (startLevel/startEndless → startGameplay, quitToMenu → меню).
+        after();
+      });
   }
 
   /** Dev/browser fallback: подтверждение перед «просмотром». */
@@ -861,6 +906,14 @@ class Game {
     this.stopGameplay(); // уровень завершён
     this.sfx?.win();
     this.doHapticNotify('success');
+    // Каждые 3–5 пройденных уровней (случайно) — межстраничная реклама,
+    // при выходе с этого экрана победы, а не поверх анимации результата.
+    this.levelsUntilAd--;
+    let showAd = false;
+    if (this.levelsUntilAd <= 0) {
+      showAd = true;
+      this.levelsUntilAd = randomInterstitialGap();
+    }
     const hasNext = mode.n < TOTAL_LEVELS;
     this.ui.win({
       score: eng.obj.score,
@@ -873,15 +926,15 @@ class Game {
       hasNext,
       onNext: () => {
         this.ui.clearModals();
-        this.startLevel(mode.n + 1);
+        this.runInterstitial(() => this.startLevel(mode.n + 1), showAd);
       },
       onRetry: () => {
         this.ui.clearModals();
-        this.startLevel(mode.n);
+        this.runInterstitial(() => this.startLevel(mode.n), showAd);
       },
       onMenu: () => {
         this.ui.clearModals();
-        this.quitToMenu();
+        this.runInterstitial(() => this.quitToMenu(), showAd);
       },
     });
   }
