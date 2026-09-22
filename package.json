@@ -1,7 +1,7 @@
 {
   "name": "neon-match",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "Neon Match — cosmic match-3 web game (GitHub Pages + Telegram Mini App)",
   "scripts": {

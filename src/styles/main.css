@@ -34,6 +34,10 @@ body {
   -webkit-tap-highlight-color: transparent;
   -webkit-user-select: none;
   user-select: none;
+  /* Требование Яндекс Игр (§1.6): долгий тап по полю не должен открывать
+     системное меню/callout (iOS) — контекстное меню дополнительно
+     блокируется обработчиком contextmenu в Game.lockGestures(). */
+  -webkit-touch-callout: none;
   touch-action: manipulation;
 }
 

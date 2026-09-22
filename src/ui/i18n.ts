@@ -126,6 +126,7 @@ const RU: Dict = {
   'common.stars': 'Звёзды',
   'common.level': 'Уровень {n}',
   'common.loading': 'Загрузка…',
+  'common.loadError': 'Не удалось запустить игру. Обновите страницу.',
   'common.on': 'Вкл',
   'common.off': 'Выкл',
 };
@@ -251,6 +252,7 @@ const EN: Dict = {
   'common.stars': 'Stars',
   'common.level': 'Level {n}',
   'common.loading': 'Loading…',
+  'common.loadError': 'Could not start the game. Please reload the page.',
   'common.on': 'On',
   'common.off': 'Off',
 };

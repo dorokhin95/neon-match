@@ -1,20 +1,24 @@
 // Загрузчик Yandex Games SDK. Для архива, загружаемого в Консоль Яндекс Игр,
-// скрипт подключается как /sdk.js (см. index.html в Yandex-сборке).
-// В dev-окружении (локальный сервер) /sdk.js отсутствует — пробуем официальный
+// скрипт подключается как /sdk.js (см. index.html в Yandex-сборке) — это
+// единственный официально поддерживаемый способ; старый CDN-адрес
+// https://yandex.ru/games/sdk/v2 в production не используется.
+// В dev-окружении (локальный сервер) /sdk.js отсутствует — только там пробуем
 // CDN; если и он недоступен, init возвращает null и игра работает без SDK.
 
 import { platformError, platformLog } from '../log';
 import type { SDK } from 'ysdk';
 
-const CDN_SDK = 'https://yandex.ru/games/sdk/v2';
+const DEV_CDN_SDK = 'https://yandex.ru/games/sdk/v2';
 
 function injectScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${src}"]`);
     if (existing) {
-      existing.addEventListener('load', () => resolve());
-      existing.addEventListener('error', () => reject(new Error(`failed to load ${src}`)));
+      // Статический тег (без async) к моменту выполнения модульного скрипта уже
+      // отработал — его load/error уже произошёл и не повторится, поэтому новые
+      // слушатели никогда бы не сработали. Результат уже известен — проверяем сразу.
       if ((window as unknown as { YaGames?: unknown }).YaGames) resolve();
+      else reject(new Error(`already failed to load ${src}`));
       return;
     }
     const s = document.createElement('script');
@@ -34,10 +38,16 @@ export async function loadYandexSdk(): Promise<SDK | null> {
   const w = window as unknown as { YaGames?: { init(opts?: { signed?: boolean }): Promise<SDK> } };
   try {
     if (!w.YaGames) {
-      try {
+      if (import.meta.env.DEV) {
+        // Локальная разработка: /sdk.js нет, берём CDN. В production-бандл
+        // эта ветка не попадает (tree-shaking по import.meta.env.DEV).
+        try {
+          await injectScript('/sdk.js');
+        } catch {
+          await injectScript(DEV_CDN_SDK);
+        }
+      } else {
         await injectScript('/sdk.js');
-      } catch {
-        await injectScript(CDN_SDK); // локальная разработка
       }
     }
     if (!w.YaGames) {

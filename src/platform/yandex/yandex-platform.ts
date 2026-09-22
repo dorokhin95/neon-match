@@ -37,7 +37,12 @@ export class YandexPlatform implements PlatformAdapter {
 
   async init(): Promise<void> {
     this.sdk = await loadYandexSdk();
-    if (!this.sdk) return;
+    if (!this.sdk) {
+      // Без SDK нет ни игрока, ни облака: репозиторий не должен пытаться
+      // писать в облако и засорять консоль ошибками (§1.14).
+      this.features.cloudSave = false;
+      return;
+    }
     // Пауза/возобновление со стороны платформы (свернуть, реклама, экран блокировки).
     try {
       this.sdk.on('game_api_pause', () => this.pauseCb?.());
@@ -46,12 +51,14 @@ export class YandexPlatform implements PlatformAdapter {
       platformWarn('SDK', 'game_api_pause/resume subscription failed', error);
     }
     try {
-      // scopes: false — минимальные разрешения; данные сохраняются и у неавторизованных.
+      // signed: false — подпись не нужна (нет своего сервера); данные
+      // сохраняются и у неавторизованных игроков.
       this.player = await this.sdk.getPlayer({ signed: false });
       platformLog('SDK', `player ready (authorized: ${this.player.isAuthorized()})`);
     } catch (error) {
       platformWarn('SDK', 'getPlayer failed — cloud save disabled', error);
       this.player = null;
+      this.features.cloudSave = false;
     }
   }
 
@@ -140,13 +147,23 @@ export class YandexPlatform implements PlatformAdapter {
 
   async setLeaderboardScore(board: string, score: number): Promise<void> {
     if (!this.sdk) throw new Error('SDK unavailable');
+    // Актуальный API — ysdk.leaderboards; getLeaderboards() объявлен устаревшим,
+    // оставлен как запасной путь для старых версий загрузчика.
+    if (this.sdk.leaderboards) {
+      await this.sdk.leaderboards.setScore(board, score);
+      return;
+    }
     const lb = await this.sdk.getLeaderboards();
     await lb.setLeaderboardScore(board, score);
   }
 
-  /** Полноэкранный режим — техтребование Яндекс для мобильных устройств. */
+  /** Полноэкранный режим — только на телефонах/планшетах. На десктопе
+   *  принудительный fullscreen по первому клику мешает игроку, а у площадки
+   *  для этого есть своя кнопка. */
   requestFullscreen(): void {
     try {
+      const device = this.sdk?.deviceInfo;
+      if (!device || !(device.isMobile() || device.isTablet())) return;
       const fs = this.sdk?.screen?.fullscreen;
       if (fs && fs.status === 'off') void fs.request().catch(() => undefined);
     } catch {
