@@ -36,6 +36,9 @@ const HINT_DELAY_S = 5;
 /** Каждая N-я победа подряд с первой попытки даёт заряд суперспособности. */
 const STREAK_REWARD_EVERY = 3;
 
+/** Техническое имя лидерборда в Консоли Яндекс Игр (маска [a-zA-Z0-9], без подчёркиваний). */
+const LEADERBOARD_ENDLESS_BEST = 'endlessBest';
+
 class Game {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -670,7 +673,7 @@ class Game {
         }
         // Новый endless-рекорд — отправить в таблицу лидеров (если доступна).
         if (this.platform.features.leaderboard && this.platform.setLeaderboardScore) {
-          this.platform.setLeaderboardScore('endless_best', this.save.endlessBest).catch(() => undefined);
+          this.platform.setLeaderboardScore(LEADERBOARD_ENDLESS_BEST, this.save.endlessBest).catch(() => undefined);
         }
       }
       if (newCombo) this.save.endlessBestCombo = this.endlessCombo;
