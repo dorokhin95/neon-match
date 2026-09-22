@@ -32,12 +32,18 @@ export class YandexPlatform implements PlatformAdapter {
   private sdk: SDK | null = null;
   private player: Player | null = null;
   private adInProgress = false;
+  private interstitialInProgress = false;
   private pauseCb: (() => void) | null = null;
   private resumeCb: (() => void) | null = null;
 
   async init(): Promise<void> {
     this.sdk = await loadYandexSdk();
-    if (!this.sdk) return;
+    if (!this.sdk) {
+      // Без SDK нет ни игрока, ни облака: репозиторий не должен пытаться
+      // писать в облако и засорять консоль ошибками (§1.14).
+      this.features.cloudSave = false;
+      return;
+    }
     // Пауза/возобновление со стороны платформы (свернуть, реклама, экран блокировки).
     try {
       this.sdk.on('game_api_pause', () => this.pauseCb?.());
@@ -46,12 +52,14 @@ export class YandexPlatform implements PlatformAdapter {
       platformWarn('SDK', 'game_api_pause/resume subscription failed', error);
     }
     try {
-      // scopes: false — минимальные разрешения; данные сохраняются и у неавторизованных.
+      // signed: false — подпись не нужна (нет своего сервера); данные
+      // сохраняются и у неавторизованных игроков.
       this.player = await this.sdk.getPlayer({ signed: false });
       platformLog('SDK', `player ready (authorized: ${this.player.isAuthorized()})`);
     } catch (error) {
       platformWarn('SDK', 'getPlayer failed — cloud save disabled', error);
       this.player = null;
+      this.features.cloudSave = false;
     }
   }
 
@@ -104,6 +112,41 @@ export class YandexPlatform implements PlatformAdapter {
     }
   }
 
+  /** Межстраничная реклама между уровнями. Никогда не бросает — если ролика
+   *  нет (оффлайн/нет оффера) или SDK недоступен, промис просто разрешается
+   *  сразу и игра продолжается без рекламы. */
+  async showInterstitialAd(): Promise<void> {
+    if (!this.sdk || this.interstitialInProgress) return;
+    this.interstitialInProgress = true;
+    try {
+      await new Promise<void>((resolve) => {
+        let finished = false;
+        const finish = (): void => {
+          if (finished) return;
+          finished = true;
+          resolve();
+        };
+        try {
+          this.sdk!.adv.showFullscreenAdv({
+            callbacks: {
+              onClose: () => finish(),
+              onError: (error) => {
+                platformWarn('Ads', 'showFullscreenAdv error', error);
+                finish();
+              },
+              onOffline: () => finish(), // нет сети — площадка не покажет ролик
+            },
+          });
+        } catch (error) {
+          platformWarn('Ads', 'showFullscreenAdv threw', error);
+          finish();
+        }
+      });
+    } finally {
+      this.interstitialInProgress = false;
+    }
+  }
+
   async loadCloudSave(): Promise<SaveEnvelope | null> {
     if (!this.player) return null;
     const data = await this.player.getData([CLOUD_KEY]);
@@ -140,13 +183,23 @@ export class YandexPlatform implements PlatformAdapter {
 
   async setLeaderboardScore(board: string, score: number): Promise<void> {
     if (!this.sdk) throw new Error('SDK unavailable');
+    // Актуальный API — ysdk.leaderboards; getLeaderboards() объявлен устаревшим,
+    // оставлен как запасной путь для старых версий загрузчика.
+    if (this.sdk.leaderboards) {
+      await this.sdk.leaderboards.setScore(board, score);
+      return;
+    }
     const lb = await this.sdk.getLeaderboards();
     await lb.setLeaderboardScore(board, score);
   }
 
-  /** Полноэкранный режим — техтребование Яндекс для мобильных устройств. */
+  /** Полноэкранный режим — только на телефонах/планшетах. На десктопе
+   *  принудительный fullscreen по первому клику мешает игроку, а у площадки
+   *  для этого есть своя кнопка. */
   requestFullscreen(): void {
     try {
+      const device = this.sdk?.deviceInfo;
+      if (!device || !(device.isMobile() || device.isTablet())) return;
       const fs = this.sdk?.screen?.fullscreen;
       if (fs && fs.status === 'off') void fs.request().catch(() => undefined);
     } catch {

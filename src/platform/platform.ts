@@ -55,6 +55,12 @@ export interface PlatformAdapter {
 
   showRewardedAd(placement: RewardedPlacement): Promise<RewardedResult>;
 
+  /** Полноэкранная межстраничная реклама (Yandex: showFullscreenAdv) — вызывается
+   *  только в логических паузах между уровнями (§4.4), не по действию игрока.
+   *  Промис разрешается после закрытия ролика, ошибки или отказа показать
+   *  (нет интернета/оффера) — в любом случае игра должна продолжиться. */
+  showInterstitialAd?(): Promise<void>;
+
   /** Облачное сохранение (Telegram CloudStorage / Yandex Player). */
   loadCloudSave(): Promise<SaveEnvelope | null>;
   saveCloudSave(save: SaveEnvelope): Promise<void>;

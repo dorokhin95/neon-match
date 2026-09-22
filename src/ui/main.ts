@@ -36,6 +36,21 @@ const HINT_DELAY_S = 5;
 /** Каждая N-я победа подряд с первой попытки даёт заряд суперспособности. */
 const STREAK_REWARD_EVERY = 3;
 
+/** Техническое имя лидерборда в Консоли Яндекс Игр (маска [a-zA-Z0-9], без подчёркиваний). */
+const LEADERBOARD_ENDLESS_BEST = 'endlessBest';
+
+/** Межстраничная реклама между уровнями: не чаще, чем через это число пройденных
+ *  уровней. Точное число каждый раз выбирается случайно в этом диапазоне (§4.4:
+ *  показ только в логических паузах, не после каждого уровня подряд). */
+const INTERSTITIAL_MIN_LEVELS = 3;
+const INTERSTITIAL_MAX_LEVELS = 5;
+
+/** Случайное целое число пройденных уровней до следующей межстраничной рекламы. */
+function randomInterstitialGap(): number {
+  const span = INTERSTITIAL_MAX_LEVELS - INTERSTITIAL_MIN_LEVELS + 1;
+  return INTERSTITIAL_MIN_LEVELS + Math.floor(Math.random() * span);
+}
+
 class Game {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -60,6 +75,8 @@ class Game {
   private endlessRecordShown = false;
   /** Было ли в этой партии спасение за рекламу (лишает бонуса «с первой попытки»). */
   private rescueUsed = false;
+  /** Сколько ещё уровней нужно пройти до следующей межстраничной рекламы. */
+  private levelsUntilAd = randomInterstitialGap();
   /** Показана ли подсказка «мало ходов» в этой партии. */
   private nudgeShown = false;
   /** Аккумулятор секундного тика таймера энергии. */
@@ -70,6 +87,12 @@ class Game {
   private documentHidden = false;
   private platformPaused = false;
   private adShowing = false;
+  /** Окно потеряло фокус (Alt+Tab, клик вне iframe игры) — звук глушится (§1.3). */
+  private windowBlurred = false;
+  /** Активен ли геймплей с точки зрения Yandex GameplayAPI (start/stop без дублей). */
+  private gameplayActive = false;
+  /** Геймплей прерван внешней паузой (вкладка/фокус/платформа) и ждёт возобновления. */
+  private gameplayInterrupted = false;
   private adModal: HTMLElement | null = null;
   /** Секунды бездействия игрока с момента последнего хода/касания. */
   private idleTime = 0;
@@ -90,28 +113,32 @@ class Game {
     this.bindPointer();
     this.lockGestures();
     window.addEventListener('resize', () => this.resize());
+    // Внешние источники паузы (§1.3 Яндекс Игр: при потере фокуса звук
+    // останавливается; Game Ready API: уход со вкладки — GameplayAPI.stop,
+    // возвращение — GameplayAPI.start). Все они сводятся к applyExternalPause().
     document.addEventListener('visibilitychange', () => {
       this.documentHidden = document.hidden;
-      this.updateRunning();
-      this.lastFrame = performance.now();
-      if (document.hidden) {
-        suspendAudio();
-        void this.repo.flush(); // уход в background — сохранить облако немедленно
-      } else if (!this.platformPaused && !this.userPaused()) {
-        resumeAudio();
-      }
+      if (document.hidden) void this.repo.flush(); // уход в background — сохранить облако немедленно
+      this.applyExternalPause();
+    });
+    window.addEventListener('blur', () => {
+      this.windowBlurred = true;
+      void this.repo.flush();
+      this.applyExternalPause();
+    });
+    window.addEventListener('focus', () => {
+      this.windowBlurred = false;
+      this.applyExternalPause();
     });
     // Платформенная пауза (Yandex game_api_pause/resume). Не дублирует
     // visibilitychange: общий расчёт running в updateRunning().
     this.platform.onPause?.(() => {
       this.platformPaused = true;
-      this.updateRunning();
-      suspendAudio();
+      this.applyExternalPause();
     });
     this.platform.onResume?.(() => {
       this.platformPaused = false;
-      this.updateRunning();
-      if (!this.documentHidden && !this.userPaused()) resumeAudio();
+      this.applyExternalPause();
     });
     // Dev-хук: превращение гема в бонус из консоли/тестов.
     window.addEventListener('neon-set-power', ((e: Event) => {
@@ -146,9 +173,53 @@ class Game {
     return this.pauseModal !== null;
   }
 
+  /** Есть ли внешняя причина паузы (не связанная с действиями игрока в игре). */
+  private externallyPaused(): boolean {
+    return this.documentHidden || this.windowBlurred || this.platformPaused;
+  }
+
   private updateRunning(): void {
-    this.running = !this.documentHidden && !this.platformPaused && !this.adShowing && !this.userPaused();
+    this.running = !this.externallyPaused() && !this.adShowing && !this.userPaused();
     if (this.running) this.lastFrame = performance.now();
+  }
+
+  /**
+   * Пересчитывает состояние после смены внешних флагов (вкладка, фокус,
+   * платформа): глушит/возвращает звук и останавливает/возобновляет
+   * GameplayAPI, но только тот геймплей, который реально шёл до прерывания.
+   */
+  private applyExternalPause(): void {
+    this.updateRunning();
+    if (this.externallyPaused()) {
+      suspendAudio();
+      if (this.gameplayActive) {
+        this.stopGameplay();
+        this.gameplayInterrupted = true;
+      }
+      return;
+    }
+    if (this.adShowing || this.userPaused()) return; // снимут свою паузу сами
+    resumeAudio();
+    if (this.gameplayInterrupted) {
+      this.gameplayInterrupted = false;
+      this.startGameplay();
+    }
+  }
+
+  /** GameplayAPI.start без дублей: SDK получает ровно одно уведомление на переход. */
+  private startGameplay(): void {
+    this.gameplayInterrupted = false;
+    if (this.gameplayActive) return;
+    this.gameplayActive = true;
+    this.platform.gameplayStart();
+  }
+
+  /** GameplayAPI.stop без дублей. */
+  private stopGameplay(): void {
+    this.gameplayInterrupted = false;
+    if (!this.gameplayActive) return;
+    this.gameplayActive = false;
+    this.platform.gameplayStop();
   }
 
   // ============ Audio ============
@@ -239,6 +310,9 @@ class Game {
     }
     // Запрет pinch-zoom на iOS (страховка к user-scalable=no).
     document.addEventListener('gesturestart', (e) => e.preventDefault());
+    // Требование Яндекс Игр (§1.6): правый клик / долгий тап по игровой области
+    // не должны открывать контекстное меню браузера.
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   // ============ Screens ============
@@ -358,7 +432,10 @@ class Game {
       this.showAdStub(() => onReward());
       return;
     }
-    this.platform.gameplayStop();
+    // Запоминаем, шёл ли геймплей: после ролика возобновляем только его
+    // (реклама из меню или с экрана проигрыша геймплей не запускает).
+    const wasActive = this.gameplayActive;
+    this.stopGameplay();
     this.adShowing = true;
     this.updateRunning();
     suspendAudio();
@@ -375,12 +452,47 @@ class Game {
     } finally {
       this.adShowing = false;
       this.updateRunning();
-      if (!this.documentHidden && !this.platformPaused && !this.userPaused()) {
+      const wantGameplay = wasActive && this.mode !== null && !this.pauseModal;
+      if (this.externallyPaused()) {
+        // Фокус/вкладка ещё не вернулись — геймплей возобновит applyExternalPause().
+        if (wantGameplay) this.gameplayInterrupted = true;
+      } else if (!this.userPaused()) {
         resumeAudio();
         // Уровень всё ещё активен — геймплей продолжается.
-        if (this.mode && !this.pauseModal) this.platform.gameplayStart();
+        if (wantGameplay) this.startGameplay();
       }
     }
+  }
+
+  /**
+   * Межстраничная реклама между уровнями (§4.4/§4.7): показывается только в
+   * логической паузе — когда игрок уже покидает экран победы (next/retry/
+   * menu), а не сразу после набора очков, и только если `show` — раз в 3–5
+   * пройденных уровней (см. levelsUntilAd в onWin). Звук и геймплей на это
+   * время останавливаются; после закрытия (или если ролика нет) выполняется
+   * `after`. На платформах без interstitialAds/`showInterstitialAd` реклама
+   * не запрашивается вовсе — сразу вызывается `after`.
+   */
+  private runInterstitial(after: () => void, show: boolean): void {
+    if (!show || !this.platform.features.interstitialAds || !this.platform.showInterstitialAd) {
+      after();
+      return;
+    }
+    this.stopGameplay();
+    this.adShowing = true;
+    this.updateRunning();
+    suspendAudio();
+    void this.platform
+      .showInterstitialAd()
+      .catch((error) => console.error('[Ads] showInterstitialAd failed', error))
+      .finally(() => {
+        this.adShowing = false;
+        this.updateRunning();
+        if (!this.externallyPaused() && !this.userPaused()) resumeAudio();
+        // Геймплей (если он вообще нужен дальше) запустит сам `after`
+        // (startLevel/startEndless → startGameplay, quitToMenu → меню).
+        after();
+      });
   }
 
   /** Dev/browser fallback: подтверждение перед «просмотром». */
@@ -446,7 +558,7 @@ class Game {
       this.ui.tickEnergy();
       this.ui.toast(t('rescue.got'));
       this.sfx?.chain();
-      this.platform.gameplayStart();
+      this.startGameplay();
     });
   }
 
@@ -511,7 +623,7 @@ class Game {
     document.getElementById('overlays')!.appendChild(this.powerBar.root);
     this.updateMovesHud();
     // Активный геймплей начался (Yandex GameplayAPI) + кнопка «Назад» (Telegram).
-    this.platform.gameplayStart();
+    this.startGameplay();
     if (this.platform.setBackButton) this.platform.setBackButton(() => this.quitToMenu());
     // Первая подсказка про бонус: один раз, при первом появлении бонуса на поле.
     if (!this.save.powerTipShown && this.engine.grid.flat().some((g) => g && g.power !== P.None)) {
@@ -606,7 +718,7 @@ class Game {
         }
         // Новый endless-рекорд — отправить в таблицу лидеров (если доступна).
         if (this.platform.features.leaderboard && this.platform.setLeaderboardScore) {
-          this.platform.setLeaderboardScore('endless_best', this.save.endlessBest).catch(() => undefined);
+          this.platform.setLeaderboardScore(LEADERBOARD_ENDLESS_BEST, this.save.endlessBest).catch(() => undefined);
         }
       }
       if (newCombo) this.save.endlessBestCombo = this.endlessCombo;
@@ -614,7 +726,7 @@ class Game {
       if (eng.movesLeft <= 0) {
         this.sfx?.lose();
         this.doHapticNotify('error');
-        this.platform.gameplayStop(); // партия завершена
+        this.stopGameplay(); // партия завершена
         this.ui.lose(eng.obj.score, {
           onRetry: () => {
             this.ui.clearModals();
@@ -637,7 +749,7 @@ class Game {
     if (eng.movesLeft <= 0) {
       this.sfx?.lose();
       this.doHapticNotify('error');
-      this.platform.gameplayStop(); // партия завершена (спасение может продолжить)
+      this.stopGameplay(); // партия завершена (спасение может продолжить)
       const n = (this.mode as { kind: 'levels'; n: number }).n;
       // Неудача тратит энергию (только там, где energyGate) и ломает серию;
       // спасение может всё вернуть.
@@ -791,9 +903,17 @@ class Game {
     }
     delete this.save.levelFails[mode.n]; // попытки сбрасываются победой
     this.persist(true); // победа/открытие уровня — критическое сохранение
-    this.platform.gameplayStop(); // уровень завершён
+    this.stopGameplay(); // уровень завершён
     this.sfx?.win();
     this.doHapticNotify('success');
+    // Каждые 3–5 пройденных уровней (случайно) — межстраничная реклама,
+    // при выходе с этого экрана победы, а не поверх анимации результата.
+    this.levelsUntilAd--;
+    let showAd = false;
+    if (this.levelsUntilAd <= 0) {
+      showAd = true;
+      this.levelsUntilAd = randomInterstitialGap();
+    }
     const hasNext = mode.n < TOTAL_LEVELS;
     this.ui.win({
       score: eng.obj.score,
@@ -806,15 +926,15 @@ class Game {
       hasNext,
       onNext: () => {
         this.ui.clearModals();
-        this.startLevel(mode.n + 1);
+        this.runInterstitial(() => this.startLevel(mode.n + 1), showAd);
       },
       onRetry: () => {
         this.ui.clearModals();
-        this.startLevel(mode.n);
+        this.runInterstitial(() => this.startLevel(mode.n), showAd);
       },
       onMenu: () => {
         this.ui.clearModals();
-        this.quitToMenu();
+        this.runInterstitial(() => this.quitToMenu(), showAd);
       },
     });
   }
@@ -824,7 +944,7 @@ class Game {
   private pause(): void {
     if (this.pauseModal) return;
     this.playUi();
-    this.platform.gameplayStop(); // пауза пользователем — геймплей остановлен
+    this.stopGameplay(); // пауза пользователем — геймплей остановлен
     this.updateRunning();
     this.pauseModal = this.ui.pause({
       onResume: () => this.resume(),
@@ -836,30 +956,37 @@ class Game {
       },
       onSettings: () => {
         // Settings over the paused game; back returns to the same pause.
-        this.resume();
+        // Геймплей при этом остаётся остановленным (GameplayAPI.start не шлём).
+        this.closePauseModal();
         this.showSettings(() => this.pause());
       },
       onQuit: () => {
-        this.resume();
+        this.closePauseModal();
         this.quitToMenu();
       },
     });
   }
 
-  private resume(): void {
+  private closePauseModal(): void {
     if (this.pauseModal) {
       this.ui.closeModal(this.pauseModal);
       this.pauseModal = null;
     }
     this.updateRunning();
+  }
+
+  private resume(): void {
+    this.closePauseModal();
     // Snap any mid-flight animation to its final position so nothing drifts.
     this.board?.resnap();
-    // Возврат в активную партию.
-    if (this.mode) this.platform.gameplayStart();
+    // Возврат в активную партию (если вкладка/фокус потеряны — стартуем при возврате).
+    if (!this.mode) return;
+    if (this.externallyPaused()) this.gameplayInterrupted = true;
+    else this.startGameplay();
   }
 
   private quitToMenu(): void {
-    this.platform.gameplayStop();
+    this.stopGameplay();
     this.platform.setBackButton?.(null);
     this.showMenu();
   }
@@ -939,10 +1066,19 @@ async function bootstrap(): Promise<void> {
   await platform.init(); // ошибки внутри адаптера не бросаются
 
   const repo = new RepoSaveRepository(platform);
-  const game = await Game.create(platform, repo);
-
-  // LoadingAPI.ready() — только когда интерфейс построен и ввод доступен.
-  platform.loadingReady();
+  let game: Game | null = null;
+  try {
+    game = await Game.create(platform, repo);
+  } catch (error) {
+    // Игра не собралась (нет 2d-контекста, битый сейв и т.п.): экран загрузки
+    // не должен висеть вечно (§1.14) — показываем понятное сообщение.
+    console.error('[Boot] game init failed', error);
+    if (loadingText) loadingText.textContent = t('common.loadError');
+  } finally {
+    // LoadingAPI.ready() — интерфейс построен (или показана ошибка), загрузка завершена.
+    platform.loadingReady();
+  }
+  if (!game) return;
   removeLoadingScreen();
   // Полноэкранный режим на мобильных (Yandex): после первого действия игрока.
   if (platform.features.interstitialAds && platform.requestFullscreen) {

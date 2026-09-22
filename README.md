@@ -44,9 +44,9 @@ npm run check:builds     # проверка: в каждой сборке тол
 | | Telegram build | Yandex build |
 |---|---|---|
 | Папка | `dist-telegram/` | `dist-yandex/` |
-| Реклама | AdsGram (rewarded) | Yandex Ads (`showRewardedVideo`) |
+| Реклама | AdsGram (rewarded) | Yandex Ads: rewarded (`showRewardedVideo`) + interstitial каждые 3–5 уровней (`showFullscreenAdv`) |
 | Сохранения | Telegram CloudStorage + localStorage | Yandex Player (`getData/setData`) + localStorage |
-| Лидерборды | — | `endless_best` |
+| Лидерборды | — | `endlessBest` |
 | Энергия | активна (hard gate) | отключена (требование модерации) |
 
 Платформа выбирается **на этапе сборки** (`vite --mode …`, alias `#platform`),
@@ -57,7 +57,7 @@ npm run check:builds     # проверка: в каждой сборке тол
 1. `npm run build:yandex && npm run pack:yandex` → `neon-match-yandex.zip`
    (index.html в корне архива, латиница без пробелов, лимит 100 МБ).
 2. Загрузите ZIP в [Консоль разработчика Яндекс Игр](https://games.yandex.ru/console/).
-3. Создайте лидерборд с техническим именем `endless_best` (Игра → Лидерборды).
+3. Создайте лидерборд с техническим именем `endlessBest` (Игра → Лидерборды).
 4. Проверьте в черновике через Debug Panel: SDK init, Game Ready, i18n,
    пауза при потере фокуса, rewarded, облачные сохранения.
 
